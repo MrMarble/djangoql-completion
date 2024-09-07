@@ -5,6 +5,7 @@ import throttle from 'lodash/throttle';
 
 import LRUCache from './lru-cache';
 import { DOMReady, escapeRegExp, setUrlParams } from './utils';
+import './completion.css'
 
 const reIntValue = '(-?0|-?[1-9][0-9]*)';
 const reFractionPart = '\\.[0-9]+';
