@@ -1,5 +1,5 @@
 {
-  "name": "djangoql-completion",
+  "name": "@mrmarble/djangoql-completion",
   "description": "DjangoQL completion widget",
   "version": "0.5.0",
   "license": "MIT",
