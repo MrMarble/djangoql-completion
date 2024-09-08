@@ -1,4 +1,4 @@
-export function DOMReady(callback) {
+export function DOMReady(callback: () => void): void {
   if (document.readyState !== 'loading') {
     callback();
   } else {
@@ -6,7 +6,7 @@ export function DOMReady(callback) {
   }
 }
 
-export function setUrlParams(url, params) {
+export function setUrlParams(url: string, params: Record<string, any>): string {
   const parts = url.split('?');
   const path = parts[0];
   let queryString = parts.slice(1).join('?');
@@ -36,7 +36,7 @@ export function setUrlParams(url, params) {
   return queryString ? [path, queryString].join('?') : path;
 }
 
-export function escapeRegExp(str) {
+export function escapeRegExp(str: string): string {
   // http://stackoverflow.com
   // /questions/3446170/escape-string-for-use-in-javascript-regex
   // eslint-disable-next-line no-useless-escape

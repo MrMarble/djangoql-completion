@@ -32,7 +32,7 @@ const lexer = new Lexer(() => {
   // Silently swallow any lexer errors
 });
 
-function token(name, value) {
+function token(name: string, value: string) {
   return { name, value };
 }
 
@@ -92,7 +92,14 @@ lexer.lexAll = function () {
   return result;
 };
 
-function suggestion(text, snippetBefore, snippetAfter, explanation) {
+interface Suggestion {
+  text: string;
+  snippetBefore: string;
+  snippetAfter: string;
+  suggestionText: string;
+}
+
+function suggestion(text: string, snippetBefore?: string, snippetAfter?: string, explanation?: string): Suggestion {
   // text is being displayed in completion box and pasted when you hit Enter.
   // snippetBefore is an optional extra text to be pasted before main text.
   // snippetAfter is an optional text to be pasted after. It may also include
@@ -110,123 +117,164 @@ function suggestion(text, snippetBefore, snippetAfter, explanation) {
   };
 }
 
+export interface DjangoQLOptions {
+  selector: string | HTMLTextAreaElement;
+  introspections: string | Introspections;
+  valuesCaseSensitive?: boolean;
+  cacheSize?: number;
+  autoResize?: boolean;
+  syntaxHelp?: string;
+  completionEnabled?: boolean;
+  onSubmit?: (value: string) => void;
+}
+
+export interface Introspections {
+  current_model: string;
+  models: { [key: string]: Model };
+  suggestions_api_url?: string;
+};
+
+export interface Model {
+  [key: string]: any;
+};
+
 // Main DjangoQL object
-const DjangoQL = function (options) {
-  let cacheSize = 100;
+class DjangoQL {
+  options: DjangoQLOptions;
+  currentModel: string | null;
+  models: { [key: string]: Model };
+  suggestionsAPIUrl: string | null;
+  token: (name: string, value: string) => { name: string; value: string; };
+  lexer: Lexer;
+  prefix: string;
+  suggestions: Suggestion[];
+  selected: number | null;
+  valuesCaseSensitive: boolean;
+  highlightCaseSensitive: boolean;
+  textarea: HTMLTextAreaElement | null;
+  completion: HTMLDivElement | null;
+  completionUL: HTMLUListElement | null;
+  completionEnabled: boolean;
+  suggestionsCache: LRUCache;
+  debouncedLoadFieldOptions: any;
+  loading: boolean;
+  debouncedRenderCompletion: any;
+  request: any;
+  DOMReady = DOMReady;
 
-  this.options = options;
-  this.currentModel = null;
-  this.models = {};
-  this.suggestionsAPIUrl = null;
-
-  this.token = token;
-  this.lexer = lexer;
-
-  this.prefix = '';
-  this.suggestions = [];
-  this.selected = null;
-  this.valuesCaseSensitive = false;
-  this.highlightCaseSensitive = true;
-
-  this.textarea = null;
-  this.completion = null;
-  this.completionUL = null;
-  this.completionEnabled = false;
-
-  // Initialization
-  if (!isObject(options)) {
-    this.logError('Please pass an object with initialization parameters');
-    return;
-  }
-  this.loadIntrospections(options.introspections);
-  if (typeof options.selector === 'string') {
-    this.textarea = document.querySelector(options.selector);
-  } else {
-    this.textarea = options.selector;
-  }
-  if (!this.textarea) {
-    this.logError(`Element not found by selector: ${options.selector}`);
-    return;
-  }
-  if (this.textarea.tagName !== 'TEXTAREA') {
-    this.logError(
-      'selector must be pointing to <textarea> element, '
-      + `but ${this.textarea.tagName} was found`,
-    );
-    return;
-  }
-  if (options.valuesCaseSensitive) {
-    this.valuesCaseSensitive = true;
-  }
-  if (options.cacheSize) {
-    if (parseInt(options.cacheSize, 10) !== options.cacheSize
-        || options.cacheSize < 1) {
-      this.logError('cacheSize must be a positive integer');
-    } else {
-      cacheSize = options.cacheSize;
+  constructor(options: DjangoQLOptions) {
+    let cacheSize = 100;
+    if (options.cacheSize) {
+      if (options.cacheSize < 1) {
+        this.logError('cacheSize must be a positive integer');
+      } else {
+        cacheSize = options.cacheSize;
+      }
     }
-  }
-  this.suggestionsCache = new LRUCache(cacheSize);
-  this.debouncedLoadFieldOptions = debounce(
-    this.loadFieldOptions.bind(this),
-    300,
-  );
-  this.loading = false;
+    this.suggestionsCache = new LRUCache(cacheSize);
+    this.loading = false;
+    this.options = options;
+    this.currentModel = null;
+    this.models = {};
+    this.suggestionsAPIUrl = null;
 
-  this.enableCompletion = this.enableCompletion.bind(this);
-  this.disableCompletion = this.disableCompletion.bind(this);
+    this.token = token;
+    this.lexer = lexer;
 
-  // these handlers are re-used more than once in the code below,
-  // so it's handy to have them already bound
-  this.onCompletionMouseClick = this.onCompletionMouseClick.bind(this);
-  this.onCompletionMouseDown = this.onCompletionMouseDown.bind(this);
-  this.popupCompletion = this.popupCompletion.bind(this);
-  this.debouncedRenderCompletion = debounce(
-    this.renderCompletion.bind(this),
-    50,
-  );
+    this.prefix = '';
+    this.suggestions = [];
+    this.selected = null;
+    this.valuesCaseSensitive = false;
+    this.highlightCaseSensitive = true;
 
-  // Bind event handlers and initialize completion & textSize containers
-  this.textarea.setAttribute('autocomplete', 'off');
-  this.textarea.addEventListener('keydown', this.onKeydown.bind(this));
-  this.textarea.addEventListener('blur', this.hideCompletion.bind(this));
-  this.textarea.addEventListener('click', this.popupCompletion);
-  if (options.autoResize) {
-    this.textareaResize = this.textareaResize.bind(this);
-    this.textarea.style.resize = 'none';
-    this.textarea.style.overflow = 'hidden';
-    this.textarea.addEventListener('input', this.textareaResize);
-    this.textareaResize();
-    // There could be a situation when fonts are not loaded yet at this
-    // point. When fonts are finally loaded it could make textarea looking
-    // weird - for example in Django 1.9+ last line won't fit. To fix this
-    // we call .textareaResize() once again when window is fully loaded.
-    window.addEventListener('load', this.textareaResize);
-  } else {
-    this.textareaResize = null;
-    // Catch resize events and re-position completion box.
-    // See http://stackoverflow.com/a/7055239
-    this.textarea.addEventListener(
-      'mouseup',
-      this.renderCompletion.bind(this, true),
+    this.textarea = null;
+    this.completion = null;
+    this.completionUL = null;
+    this.completionEnabled = false;
+
+    // Initialization
+    if (!isObject(options)) {
+      this.logError('Please pass an object with initialization parameters');
+      return;
+    }
+    this.loadIntrospections(options.introspections);
+    if (typeof options.selector === 'string') {
+      this.textarea = document.querySelector(options.selector);
+    } else {
+      this.textarea = options.selector;
+    }
+    if (!this.textarea) {
+      this.logError(`Element not found by selector: ${options.selector}`);
+      return;
+    }
+    if (this.textarea.tagName !== 'TEXTAREA') {
+      this.logError(
+        'selector must be pointing to <textarea> element, '
+        + `but ${this.textarea.tagName} was found`,
+      );
+      return;
+    }
+    if (options.valuesCaseSensitive) {
+      this.valuesCaseSensitive = true;
+    }
+
+
+    this.debouncedLoadFieldOptions = debounce(
+      this.loadFieldOptions.bind(this),
+      300,
     );
-    this.textarea.addEventListener(
-      'mouseout',
-      this.renderCompletion.bind(this, true),
+    this.loading = false;
+
+    this.enableCompletion = this.enableCompletion.bind(this);
+    this.disableCompletion = this.disableCompletion.bind(this);
+
+    // these handlers are re-used more than once in the code below,
+    // so it's handy to have them already bound
+    this.onCompletionMouseClick = this.onCompletionMouseClick.bind(this);
+    this.onCompletionMouseDown = this.onCompletionMouseDown.bind(this);
+    this.popupCompletion = this.popupCompletion.bind(this);
+    this.debouncedRenderCompletion = debounce(
+      this.renderCompletion.bind(this),
+      50,
     );
-  }
 
-  this.createCompletionElement();
-};
+    // Bind event handlers and initialize completion & textSize containers
+    this.textarea.setAttribute('autocomplete', 'off');
+    this.textarea.addEventListener('keydown', this.onKeydown.bind(this));
+    this.textarea.addEventListener('blur', this.hideCompletion.bind(this));
+    this.textarea.addEventListener('click', this.popupCompletion);
+    if (options.autoResize) {
+      this.textarea.style.resize = 'none';
+      this.textarea.style.overflow = 'hidden';
+      this.textarea.addEventListener('input', this.textareaResize);
+      this.textareaResize();
+      // There could be a situation when fonts are not loaded yet at this
+      // point. When fonts are finally loaded it could make textarea looking
+      // weird - for example in Django 1.9+ last line won't fit. To fix this
+      // we call .textareaResize() once again when window is fully loaded.
+      window.addEventListener('load', this.textareaResize);
+    } else {
+      // Catch resize events and re-position completion box.
+      // See http://stackoverflow.com/a/7055239
+      this.textarea.addEventListener(
+        'mouseup',
+        this.renderCompletion.bind(this, true),
+      );
+      this.textarea.addEventListener(
+        'mouseout',
+        this.renderCompletion.bind(this, true),
+      );
+    }
 
-// Backward compatibility
-DjangoQL.init = function (options) {
-  return new DjangoQL(options);
-};
+    this.createCompletionElement();
+  };
 
-DjangoQL.DOMReady = DOMReady;
+  // Backward compatibility
+  init(options: DjangoQLOptions) {
+    return new DjangoQL(options);
+  };
 
-DjangoQL.prototype = {
+
   createCompletionElement() {
     const { options } = this;
     let syntaxHelp;
@@ -234,7 +282,7 @@ DjangoQL.prototype = {
     if (!this.completion) {
       this.completion = document.createElement('div');
       this.completion.className = 'djangoql-completion';
-      document.querySelector('body').appendChild(this.completion);
+      document.body.appendChild(this.completion);
       this.completionUL = document.createElement('ul');
       this.completionUL.onscroll = throttle(
         this.onCompletionScroll.bind(this),
@@ -256,37 +304,37 @@ DjangoQL.prototype = {
       }
 
       // eslint-disable-next-line no-prototype-builtins
-      this.completionEnabled = options.hasOwnProperty('completionEnabled')
-        ? options.completionEnabled
+      this.completionEnabled = 'completionEnabled' in options
+        ? !!options.completionEnabled
         : true;
     }
-  },
+  };
 
   destroyCompletionElement() {
     if (this.completion) {
-      this.completion.parentNode.removeChild(this.completion);
+      this.completion.remove();
       this.completion = null;
       this.completionEnabled = false;
     }
-  },
+  };
 
   enableCompletion() {
     this.completionEnabled = true;
-  },
+  };
 
   disableCompletion() {
     this.completionEnabled = false;
     this.hideCompletion();
-  },
+  };
 
-  getJson(url, settings) {
+  getJson(url: string, settings: { success: (data: any) => void }) {
     this.loading = true;
 
-    const onLoadError = function () {
+    const onLoadError = () => {
       this.loading = false;
       this.request = null;
       this.logError(`failed to fetch from ${url}`);
-    }.bind(this);
+    };
 
     if (this.request) {
       this.request.abort();
@@ -294,7 +342,7 @@ DjangoQL.prototype = {
     this.request = new XMLHttpRequest();
 
     this.request.open('GET', url, true);
-    this.request.onload = function () {
+    this.request.onload = () => {
       this.loading = false;
       if (this.request.status === 200) {
         if (typeof settings.success === 'function') {
@@ -304,23 +352,23 @@ DjangoQL.prototype = {
         onLoadError();
       }
       this.request = null;
-    }.bind(this);
+    };
     this.request.ontimeout = onLoadError;
     this.request.onerror = onLoadError;
     /* eslint-disable max-len */
     // Workaround for IE9, see
     // https://cypressnorth.com/programming/internet-explorer-aborting-ajax-requests-fixed/
     /* eslint-enable max-len */
-    this.request.onprogress = function () {};
+    this.request.onprogress = function () { };
     window.setTimeout(this.request.send.bind(this.request));
-  },
+  };
 
-  loadIntrospections(introspections) {
-    const initIntrospections = function (data) {
+  loadIntrospections(introspections: string | Introspections) {
+    const initIntrospections = (data: Introspections) => {
       this.currentModel = data.current_model;
       this.models = data.models;
-      this.suggestionsAPIUrl = data.suggestions_api_url;
-    }.bind(this);
+      this.suggestionsAPIUrl = data.suggestions_api_url || null;
+    };
 
     if (typeof introspections === 'string') {
       // treat as URL
@@ -333,26 +381,27 @@ DjangoQL.prototype = {
         + `object with definitions, but ${introspections} was found`,
       );
     }
-  },
+  };
 
-  logError(message) {
+  logError(message: string) {
     console.error(`DjangoQL: ${message}`); // eslint-disable-line no-console
-  },
+  };
 
-  onCompletionMouseClick(e) {
+  onCompletionMouseClick(e: MouseEvent) {
     this.selectCompletion(
-      parseInt(e.currentTarget.getAttribute('data-index'), 10),
+      parseInt((e.currentTarget as HTMLLIElement).getAttribute('data-index')!, 10),
     );
-  },
+  };
 
-  onCompletionMouseDown(e) {
+  onCompletionMouseDown(e: MouseEvent) {
     // This is needed to prevent 'blur' event on textarea
     e.preventDefault();
-  },
+  };
 
-  onKeydown(e) {
-    switch (e.keyCode) {
-      case 38: // up arrow
+  onKeydown(e: KeyboardEvent) {
+
+    switch (e.key) {
+      case 'ArrowUp':
         if (this.suggestions.length) {
           if (this.selected === null) {
             this.selected = this.suggestions.length - 1;
@@ -366,7 +415,7 @@ DjangoQL.prototype = {
         }
         break;
 
-      case 40: // down arrow
+      case 'ArrowDown':
         if (this.suggestions.length) {
           if (this.selected === null) {
             this.selected = 0;
@@ -380,14 +429,14 @@ DjangoQL.prototype = {
         }
         break;
 
-      case 9: // Tab
+      case 'Tab':
         if (this.selected !== null) {
           this.selectCompletion(this.selected);
           e.preventDefault();
         }
         break;
 
-      case 13: // Enter
+      case 'Enter':
         // Technically this is a textarea, due to automatic multi-line feature,
         // but other than that it should look and behave like a normal input.
         // So expected behavior when pressing Enter is to submit the form,
@@ -395,22 +444,21 @@ DjangoQL.prototype = {
         if (this.selected !== null) {
           this.selectCompletion(this.selected);
         } else if (typeof this.options.onSubmit === 'function') {
-          this.options.onSubmit(this.textarea.value);
+          this.options.onSubmit(this.textarea?.value ?? '');
         } else {
-          e.currentTarget.form.submit();
+          (e.currentTarget as HTMLTextAreaElement).form?.submit?.();
         }
         e.preventDefault();
         break;
 
-      case 27: // Esc
+      case 'Escape':
         this.hideCompletion();
         break;
 
-      case 16: // Shift
-      case 17: // Ctrl
-      case 18: // Alt
-      case 91: // Windows Key or Left Cmd on Mac
-      case 93: // Windows Menu or Right Cmd on Mac
+      case 'Shift': // Shift
+      case 'Control': // Ctrl
+      case 'Alt': // Alt
+      case 'Meta': // Windows Key or Cmd on Mac
         // Control keys shouldn't trigger completion popup
         break;
 
@@ -420,9 +468,12 @@ DjangoQL.prototype = {
         window.setTimeout(this.popupCompletion, 10);
         break;
     }
-  },
+  };
 
   textareaResize() {
+    if (!this.textarea) {
+      return;
+    }
     // Automatically grow/shrink textarea to have the contents always visible
     const style = window.getComputedStyle(this.textarea, null);
     const heightOffset = parseFloat(style.paddingTop)
@@ -432,21 +483,24 @@ DjangoQL.prototype = {
     // Ping me if you know how to get rid of "+1"
     const height = (this.textarea.scrollHeight - heightOffset) + 1;
     this.textarea.style.height = `${height}px`;
-  },
+  };
 
   popupCompletion() {
     this.generateSuggestions();
     this.renderCompletion();
-  },
+  };
 
-  selectCompletion(index) {
+  selectCompletion(index: number) {
+    if (!this.textarea) {
+      return;
+    }
     const context = this.getContext(
       this.textarea.value,
       this.textarea.selectionStart,
     );
     const { currentFullToken } = context;
     let textValue = this.textarea.value;
-    const startPos = this.textarea.selectionStart - context.prefix.length;
+    const startPos = this.textarea.selectionStart - (context.prefix?.length ?? 0);
     let tokenEndPos = null;
 
     // cutting current token from the string
@@ -490,18 +544,18 @@ DjangoQL.prototype = {
     if (this.textareaResize) {
       this.textareaResize();
     }
-    this.generateSuggestions(this.textarea);
+    this.generateSuggestions();
     this.renderCompletion();
-  },
+  };
 
   hideCompletion() {
     this.selected = null;
     if (this.completion) {
       this.completion.style.display = 'none';
     }
-  },
+  };
 
-  highlight(text, highlight) {
+  highlight(text: string, highlight: string) {
     if (!highlight || !text) {
       return text;
     }
@@ -512,9 +566,12 @@ DjangoQL.prototype = {
       new RegExp(`(${escapeRegExp(highlight)})`, 'ig'),
       '<b>$1</b>',
     );
-  },
+  };
 
-  renderCompletion(dontForceDisplay) {
+  renderCompletion(dontForceDisplay?: boolean) {
+    if (!this.completionUL || !this.textarea || !this.completion) {
+      return;
+    }
     let currentLi;
     let i;
     let completionRect;
@@ -527,7 +584,7 @@ DjangoQL.prototype = {
       return;
     }
 
-    if (dontForceDisplay && this.completion.style.display === 'none') {
+    if (dontForceDisplay && this.completion?.style.display === 'none') {
       return;
     }
     if (!this.suggestions.length && !this.loading) {
@@ -536,8 +593,8 @@ DjangoQL.prototype = {
     }
 
     const suggestionsLen = this.suggestions.length;
-    const li = [].slice.call(
-      this.completionUL.querySelectorAll('li[data-index]'),
+    const li: HTMLLIElement[] = [].slice.call(
+      this.completionUL?.querySelectorAll('li[data-index]'),
     );
     liLen = li.length;
 
@@ -547,7 +604,7 @@ DjangoQL.prototype = {
         currentLi = li[i];
       } else {
         currentLi = document.createElement('li');
-        currentLi.setAttribute('data-index', i);
+        currentLi.setAttribute('data-index', i + '');
         currentLi.addEventListener('click', this.onCompletionMouseClick);
         currentLi.addEventListener('mousedown', this.onCompletionMouseDown);
         this.completionUL.appendChild(currentLi);
@@ -597,9 +654,9 @@ DjangoQL.prototype = {
     this.completion.style.top = `${top}px`;
     this.completion.style.left = `${inputRect.left}px`;
     this.completion.style.display = 'block';
-  },
+  };
 
-  resolveName(name) {
+  resolveName(name: string) {
     // Walk through introspection definitions and get target model and field
     let f;
     let i;
@@ -612,7 +669,7 @@ DjangoQL.prototype = {
     if (model) {
       modelStack.push(model);
       for (i = 0, l = nameParts.length; i < l; i++) {
-        f = this.models[model][nameParts[i]];
+        f = this.models[model!][nameParts[i]];
         if (!f) {
           model = null;
           field = null;
@@ -627,11 +684,11 @@ DjangoQL.prototype = {
       }
     }
     return { modelStack, model, field };
-  },
+  };
 
-  getContext(text, cursorPos) {
+  getContext(text: string, cursorPos: number) {
     // This function returns an object with the following 4 properties:
-    let prefix; // text already entered by user in the current scope
+    let prefix: string; // text already entered by user in the current scope
     let scope = null; // 'field', 'comparison', 'value', 'logical' or null
     let model = null; // model, set for 'field', 'comparison' and 'value'
     let field = null; // field, set for 'comparison' and 'value'
@@ -684,12 +741,12 @@ DjangoQL.prototype = {
       scope = 'field';
       model = this.currentModel;
       if (prefix === '.') {
-        prefix = text.slice(lastToken.start, cursorPos);
+        prefix = text.slice(lastToken?.start ?? 0, cursorPos);
       }
       nameParts = prefix.split('.');
       if (nameParts.length > 1) {
         // use last part as a prefix, analyze preceding parts to get the model
-        prefix = nameParts.pop();
+        prefix = nameParts.pop() || '';
         resolvedName = this.resolveName(nameParts.join('.'));
         if (resolvedName.model && !resolvedName.field) {
           model = resolvedName.model;
@@ -715,8 +772,8 @@ DjangoQL.prototype = {
         model = resolvedName.model;
         field = resolvedName.field;
         modelStack = resolvedName.modelStack;
-        if (prefix[0] === '"' && (this.models[model][field].type === 'str'
-            || this.models[model][field].options)) {
+        if (prefix[0] === '"' && (this.models[model][field!].type === 'str'
+          || this.models[model][field!].options)) {
           prefix = prefix.slice(1);
         }
       }
@@ -743,14 +800,23 @@ DjangoQL.prototype = {
       currentFullToken,
       modelStack,
     };
-  },
+  };
 
   getCurrentFieldOptions() {
     const input = this.textarea;
+    if (!input) {
+      return null;
+    }
     const ctx = this.getContext(input.value, input.selectionStart);
-    const model = this.models[ctx.model];
+    const model = this.models[ctx.model!];
     const field = ctx.field && model[ctx.field];
-    const fieldOptions = {
+    const fieldOptions: {
+      cacheKey: string | null;
+      context: ReturnType<typeof DjangoQL.prototype.getContext>;
+      field: string | null;
+      model: Model;
+      options: string[] | null;
+    } = {
       cacheKey: null,
       context: ctx,
       field,
@@ -771,19 +837,20 @@ DjangoQL.prototype = {
       fieldOptions.cacheKey = `${ctx.model}.${ctx.field}|${ctx.prefix}`;
     }
     return fieldOptions;
-  },
+  };
 
-  loadFieldOptions(loadMore) {
-    const fieldOptions = this.getCurrentFieldOptions() || {};
-    const { context } = fieldOptions;
+  loadFieldOptions(loadMore: boolean) {
+    const fieldOptions = this.getCurrentFieldOptions();
+    const { context } = fieldOptions || {};
 
-    if (!fieldOptions.cacheKey) {
+    if (!fieldOptions?.cacheKey || !context) {
       // The context has likely changed, user's cursor is in another position
       return;
     }
     const requestParams = {
       field: `${context.model}.${context.field}`,
       search: context.prefix,
+      page: undefined,
     };
 
     const cached = this.suggestionsCache.get(fieldOptions.cacheKey) || {};
@@ -796,10 +863,15 @@ DjangoQL.prototype = {
 
     cached.loading = true;
     this.suggestionsCache.set(fieldOptions.cacheKey, cached);
-
+    if (!this.suggestionsAPIUrl) {
+      return;
+    }
     const requestUrl = setUrlParams(this.suggestionsAPIUrl, requestParams);
     this.getJson(requestUrl, {
-      success: function (data) {
+      success: (data: { page: number, items: any[] }) => {
+        if (!fieldOptions.cacheKey) {
+          return;
+        }
         const cache = this.suggestionsCache.get(fieldOptions.cacheKey) || {};
         if (data.page - 1 !== (cache.page || 0)) {
           // either pages were loaded out of order,
@@ -814,22 +886,22 @@ DjangoQL.prototype = {
         this.loading = false;
         this.populateFieldOptions();
         this.renderCompletion();
-      }.bind(this),
+      },
     });
     // Render 'loading' element
     this.populateFieldOptions();
     this.renderCompletion();
-  },
+  };
 
-  populateFieldOptions(loadMore) {
+  populateFieldOptions(loadMore?: boolean) {
     const fieldOptions = this.getCurrentFieldOptions();
     if (fieldOptions === null) {
       // 1) we are out of field options context
       // 2) field has no options
       return;
     }
-    let { options } = fieldOptions;
-    const prefix = fieldOptions.context && fieldOptions.context.prefix;
+    let { options, context } = fieldOptions;
+    const prefix = context?.prefix;
     let cached;
 
     if (options) {
@@ -853,10 +925,10 @@ DjangoQL.prototype = {
       cached = this.suggestionsCache.get(fieldOptions.cacheKey) || {};
       options = cached.items || [];
       if (!cached.loading
-          && (!cached.page || (loadMore && cached.has_next))) {
+        && (!cached.page || (loadMore && cached.has_next))) {
         this.debouncedLoadFieldOptions(loadMore);
       }
-      if (!options.length) {
+      if (!options?.length) {
         // Should we show 'no results' message?
         return;
       }
@@ -864,22 +936,28 @@ DjangoQL.prototype = {
 
     this.highlightCaseSensitive = this.valuesCaseSensitive;
     this.suggestions = options.map((f) => suggestion(f, '"', '"'));
-  },
+  };
 
   onCompletionScroll() {
+    if (!this.completionUL) {
+      return;
+    }
     const rectHeight = this.completionUL.getBoundingClientRect().height;
     const scrollBottom = this.completionUL.scrollTop + rectHeight;
     if (scrollBottom > rectHeight
-        && scrollBottom > (this.completionUL.scrollHeight - rectHeight)) {
+      && scrollBottom > (this.completionUL.scrollHeight - rectHeight)) {
       // TODO: add some checks of context?
       this.populateFieldOptions(true);
     }
-  },
+  };
 
   generateSuggestions() {
+    if (!this.textarea) {
+      return;
+    }
     const input = this.textarea;
     let suggestions;
-    let snippetAfter;
+    let snippetAfter: string;
     let searchFilter;
 
     if (!this.completionEnabled) {
@@ -900,13 +978,19 @@ DjangoQL.prototype = {
     }
 
     // default search filter - find anywhere in the string, case-sensitive
-    searchFilter = function (item) {
+    searchFilter = (item: Suggestion) => {
       return item.text.indexOf(this.prefix) >= 0;
-    }.bind(this);
+    };
     // default highlight mode - case sensitive
     this.highlightCaseSensitive = true;
 
     const context = this.getContext(input.value, input.selectionStart);
+    if (!context.model) {
+      // Model wasn't found, reset suggestions
+      this.prefix = '';
+      this.suggestions = [];
+      return;
+    }
     const { modelStack } = context;
     this.prefix = context.prefix;
     const model = this.models[context.model];
@@ -966,7 +1050,7 @@ DjangoQL.prototype = {
         });
         if (field && field.type !== 'bool') {
           if (['str', 'date', 'datetime'].indexOf(field.type) >= 0
-              || field.options) {
+            || field.options) {
             snippetAfter = ' ("|")';
           } else {
             snippetAfter = ' (|)';
@@ -975,10 +1059,10 @@ DjangoQL.prototype = {
           this.suggestions.push(suggestion('not in', '', snippetAfter));
         }
         // use "starts with" search filter instead of default
-        searchFilter = function (item) {
+        searchFilter = (item: Suggestion) => {
           // See http://stackoverflow.com/a/4579228
           return item.text.lastIndexOf(this.prefix, 0) === 0;
-        }.bind(this);
+        };
         break;
 
       case 'value':
@@ -1020,7 +1104,7 @@ DjangoQL.prototype = {
     } else {
       this.selected = null;
     }
-  },
+  };
 
 };
 

@@ -1,7 +1,7 @@
 import DjangoQL from '@/index';
 
-let djangoQL;
-let token;
+let djangoQL: DjangoQL;
+let token: typeof DjangoQL.prototype.token;
 
 describe('test DjangoQL completion', () => {
   beforeEach(() => {
@@ -112,7 +112,7 @@ describe('test DjangoQL completion', () => {
         },
       },
       selector: 'textarea[name=test]',
-      autoresize: true,
+      autoResize: true,
     });
     token = djangoQL.token;
   });
@@ -259,7 +259,15 @@ describe('test DjangoQL completion', () => {
   describe('.getScope()', () => {
     it('should properly detect scope and prefix', () => {
       const book = djangoQL.currentModel;
-      const examples = [
+      const examples:{
+        args: [string, number],
+        result: {
+          prefix: string,
+          scope: string,
+          model: string | null,
+          field: string | null,
+        }
+      }[] = [
         {
           args: ['', 0],
           result: {
@@ -425,16 +433,18 @@ describe('test DjangoQL completion', () => {
       ];
       examples.forEach((e) => {
         const result = djangoQL.getContext(...e.args);
+        // @ts-expect-error
         delete result.currentFullToken; // it's not relevant in this case
         // Model Stack properly builds only for continiously interaction
         // with textarea for now
+        // @ts-expect-error
         delete result.modelStack;
         expect(result).toStrictEqual(e.result);
       });
     });
 
     it('should return nulls for unknown cases', () => {
-      const examples = [
+      const examples: [string, number][] = [
         ['random_word ', 12], // cursor is after unknown field
         ['id > 1 hmm ', 11], // entered bad logical
         ['(id = 1)', 8], // just after right paren
@@ -451,6 +461,7 @@ describe('test DjangoQL completion', () => {
 
   describe('.generateSuggestions()', () => {
     it('should not have circular deps', () => {
+      // @ts-expect-error
       djangoQL.textarea.value = 'author.';
       djangoQL.generateSuggestions();
       // "book.author.book" sholdn't be suggested
@@ -465,6 +476,7 @@ describe('test DjangoQL completion', () => {
 
       // Change model and test in reverse side
       djangoQL.currentModel = 'auth.user';
+      // @ts-expect-error
       djangoQL.textarea.value = 'book.';
       djangoQL.generateSuggestions();
       expect(djangoQL.suggestions).toStrictEqual(
@@ -477,6 +489,7 @@ describe('test DjangoQL completion', () => {
       );
 
       djangoQL.currentModel = 'auth.group';
+      // @ts-expect-error
       djangoQL.textarea.value = 'user.';
       djangoQL.generateSuggestions();
       expect(djangoQL.suggestions).toStrictEqual(
@@ -487,6 +500,7 @@ describe('test DjangoQL completion', () => {
           text: 'book',
         }]),
       );
+      // @ts-expect-error
       djangoQL.textarea.value = 'user.book.';
       djangoQL.generateSuggestions();
       // "User" model is already in the Model Stack
