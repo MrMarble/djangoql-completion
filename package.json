@@ -3,11 +3,17 @@
   "description": "DjangoQL completion widget",
   "version": "0.5.0",
   "license": "MIT",
-  "homepage": "https://github.com/ivelum/djangoql-completion",
+  "homepage": "https://github.com/mrmarble/djangoql-completion",
   "author": "Denis Stebunov (https://github.com/stebunovd)",
+  "maintainers": [
+    {
+      "name": "Alvaro Tinoco",
+      "url": "https://github.com/mrmarble"
+    }
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/ivelum/djangoql-completion.git"
+    "url": "https://github.com/mrmarble/djangoql-completion.git"
   },
   "main": "dist/index.cjs.js",
   "module": "dist/index.esm.js",
