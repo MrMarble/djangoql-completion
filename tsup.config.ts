@@ -4,7 +4,9 @@ export default defineConfig(options =>({
   entry: ['src/index.ts'],
   splitting: false,
   sourcemap: false,
-  dts: true,
+  dts: {
+    footer: "declare module '@mrmarble/djangoql-completion';"
+  },
   clean: true,
   minify: !options.watch,
   treeshake: true,
