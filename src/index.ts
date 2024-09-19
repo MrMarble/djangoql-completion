@@ -546,6 +546,7 @@ class DjangoQL {
     }
     this.generateSuggestions();
     this.renderCompletion();
+    this.textarea.dispatchEvent(new Event('input'));
   };
 
   hideCompletion() {
