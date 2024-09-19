@@ -12,9 +12,4 @@ export default defineConfig(options =>({
   treeshake: true,
   format: ['cjs', 'esm'],
   outDir: 'dist',
-  outExtension({format}) {
-    return {
-      js: `.${format}.js`,
-    }
-  }
 }))
