@@ -851,7 +851,7 @@ class DjangoQL {
     const requestParams = {
       field: `${context.model}.${context.field}`,
       search: context.prefix,
-      page: undefined,
+      page: 1,
     };
 
     const cached = this.suggestionsCache.get(fieldOptions.cacheKey) || {};
